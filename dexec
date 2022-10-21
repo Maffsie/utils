@@ -1,0 +1,122 @@
+#!/bin/sh
+
+RETVAL=0
+FDOUT=/dev/stdout
+FDERR=/dev/stderr
+
+STACK_NAME=
+CT_NAME=
+STCT_SEP=_
+EXEC_TGT=
+EXEC_AS=0
+EXEC_SHELL=/bin/sh
+EXEC_ARGS=
+
+usage () {
+	cat > /dev/stdout <<EOS
+$0: Execute a command within a docker container roughly matching the given name.
+
+Usage:
+$0 [-u ID][-s SHELL][-S STACK_NAME] NAME_FRAGMENT
+EOS
+}
+
+_fmtlog () {
+	echo "$1: $2"
+}
+_log () {
+	echo "$@" >> $FDOUT
+}
+_notice () {
+	_fmtlog NOTICE "$1" >> $FDOUT
+}
+_info () {
+	_fmtlog INFO "$1" >> $FDOUT
+}
+_warn () {
+	_fmtlog WARN "$1" >> $FDERR
+}
+_err () {
+	_fmtlog ERR "$1" >> $FDERR
+	if [ "$2" = "" ] || [ "$2" = "0" ]; then exit 1
+	else exit "$2"; fi
+}
+
+ctls () {
+        docker ps -f 'status=running' -f "name=~*$1*" --format '{{.Names}} ({{.ID}}) - {{.Status}}'
+}
+ctid () {
+	docker ps -f 'status=running' -f "name=~*$1*" --format '{{.ID}}'
+}
+ctc () {
+	ctid "$1" | wc -l
+}
+
+argparse () {
+	while :; do case $1 in
+	-v|--verbose)
+	        set -x
+	        ;;
+	--stack=?*)
+		STACK_NAME=${1#*=}
+		;;
+	-S|--stack)
+		STACK_NAME="$2"; shift
+		;;
+	--shell=?*)
+		EXEC_SHELL=${1#*=}
+		;;
+	-s|--shell)
+		EXEC_SHELL="$2"; shift
+		;;
+	--uid=?*|--user=?*)
+		EXEC_AS=${1#*=}
+		;;
+	-u|--uid|--user)
+		EXEC_AS="$2"; shift
+		;;
+	--name=?*)
+	        CT_NAME=${1#*=}
+	        ;;
+	-n|--name)
+	        CT_NAME="$2"; shift
+	        ;;
+	--)
+		shift; break
+		;;
+	-h|--help)
+		usage; exit $RETVAL
+		;;
+	-?*)
+		$0 --help
+		_err "Unrecognised option $1" 1
+		;;
+	*)
+	        CT_NAME="$1"; shift
+	        EXEC_ARGS="$*"
+		break
+	esac; shift; done
+}
+
+## TODO: try_shell - retry each in a list of possible shells
+## TODO: least_privileged_user - find the least privileged user of a running CT
+
+argparse "$@"
+if [ "$CT_NAME" = "" ]; then _err "No container name fragment specified!" 1; fi
+if [ "$CT_NAME" != "" ] && [ "$STACK_NAME" = "" ]; then
+        EXEC_TGT="$CT_NAME"
+else
+        EXEC_TGT="$STACK_NAME$STCT_SEP$CT_NAME"
+fi
+MATCHED_CTS=$(ctc "$EXEC_TGT")
+if [ "$MATCHED_CTS" -lt 1 ]; then _err "No running containers matched '$EXEC_TGT'" 1; fi
+if [ "$MATCHED_CTS" -gt 1 ]; then
+        _err "More than one running container matched '$EXEC_TGT', please refine.
+Matched containers:
+$(ctls "$EXEC_TGT")" 1
+fi
+CTID=$(ctid "$EXEC_TGT")
+# Ignore unquoted args, otherwise bad things happen
+# shellcheck disable=SC2086
+docker exec -it -u "$EXEC_AS" "$CTID" "$EXEC_SHELL" $EXEC_ARGS
+echo "Command exited with status $?"

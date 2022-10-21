@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# node-up
+#  type: script, manual invocation
+#  purpose: brings back online the local docker swarm node
+
+HN=`hostname -s`
+
+docker node update --availability active $HN
+
+watch -t -n 1 docker service ls

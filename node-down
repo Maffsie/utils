@@ -1,0 +1,12 @@
+#!/bin/sh
+
+# node-down
+#  type: script, manual invocation
+#  purpose: safely brings down a node in the docker swarm
+
+HN=`hostname -s`
+
+docker node update --availability drain $HN
+
+watch -t -n 1 docker service ls
+watch -t -n 1 docker ps

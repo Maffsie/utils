@@ -1,0 +1,207 @@
+#!/bin/sh
+
+IPADDR=`ifconfig eth0 | grep 'inet ' | awk '{print $2}'`
+IP6ADDR=`ifconfig eth0 | grep 'inet6 ' | awk '{print $2}' | grep -v '^f'`
+DFROUTE=`route -n | grep '^0.0.0.0' | awk '{print $2}'`
+DF6ROUTE="fe80::1"
+IPSUB="27"
+IP6SUB="64"
+WORKDIR=`mktemp -d`
+cd $WORKDIR
+
+hetzner () {
+  curl -su "$ROBOT_USERNAME:$ROBOT_PASSWORD" https://robot-ws.your-server.de/$1
+}
+get_hn () {
+  hetzner server/$IPADDR | jq -r .server.server_name
+}
+get_sshkeys () {
+  hetzner key | jq -r .[].key.data
+}
+
+HN=`get_hn`
+
+INST_FEAT="ata base ide scsi usb virtio ext4 network"
+INST_MODS="sd-mod,usb-storage,ext4,e1000e,r8169"
+
+DIST_VER="3.15"
+DIST_ARCH=`uname -m`
+DIST_APK_VER="2.12.7-r3"
+DIST_MIRROR="http://ams.edge.kernel.org/alpine"
+DIST_APK_REPO="$DIST_MIRROR/v$DIST_VER"
+DIST_APK_STATIC="$DIST_APK_REPO/main/$DIST_ARCH/apk-tools-static-${DIST_APK_VER}.apk"
+
+DIST_BASE_PACKAGES="alpine-base syslinux"
+DIST_ADDL_PACKAGES="busybox-extras iproute2 openssh pingu"
+DIST_FINAL_PACKAGES="linux-lts"
+
+HW_DISK="sda"
+HW_DISK_BOOT=1
+HW_DISK_ROOT=2
+HW_DISK_VAR=3
+
+MNT_ROOT=/mnt
+MNT_BOOT=/mnt/boot
+MNT_VAR=/mnt/var
+
+volmount () {
+  eval "mount /dev/$HW_DISK\$HW_DISK_$1 \$MNT_$1"
+}
+bindmount () {
+  mount --bind /$1 $MNT_ROOT/$1
+}
+
+fdisk -w always -W always /dev/sda << EOF
+o
+w
+EOF
+
+fdisk -w always -W always /dev/sda << EOF
+n
+p
+$HW_DISK_BOOT
+
++512M
+n
+p
+$HW_DISK_ROOT
+
++64G
+n
+p
+$HW_DISK_VAR
+
+
+a
+1
+w
+EOF
+
+partprobe
+
+mkfs.ext4 -m 0 -q -L boot /dev/$HW_DISK$HW_DISK_BOOT
+mkfs.ext4 -q -L root /dev/$HW_DISK$HW_DISK_ROOT
+mkfs.ext4 -q -L var /dev/$HW_DISK$HW_DISK_VAR
+
+volmount ROOT
+mkdir $MNT_BOOT
+mkdir $MNT_VAR
+volmount BOOT
+volmount VAR
+
+curl -s $DIST_APK_STATIC | tar xz
+$WORKDIR/sbin/apk.static --repository $DIST_APK_REPO/main --update-cache --allow-untrusted --root $MNT_ROOT --initdb add $DIST_BASE_PACKAGES
+
+cat << EOF > $MNT_ROOT/etc/fstab
+/dev/$HW_DISK$HW_DISK_ROOT / ext4 defaults,noatime 0 0
+/dev/$HW_DISK$HW_DISK_VAR /var ext4 defaults,noatime 0 0
+/dev/$HW_DISK$HW_DISK_BOOT /boot ext4 defaults 0 2
+EOF
+
+cat << EOF > $MNT_ROOT/etc/apk/repositories
+$DIST_APK_REPO/main
+$DIST_APK_REPO/community
+$DIST_APK_MIRROR/edge/testing
+EOF
+
+cat << EOF > $MNT_ROOT/etc/resolv.conf
+nameserver 1.1.1.1
+EOF
+
+cat << EOF > $MNT_ROOT/etc/update-extlinux.conf
+overwrite=1
+vesa_menu=0
+default_kernel_opts="quiet"
+modules=$INST_MODS
+root=/dev/$HW_DISK$HW_DISK_ROOT
+verbose=0
+hidden=1
+timeout=1
+serial_port=
+serial_baud=115200
+xen_opts=dom0_mem=256M
+password=''
+EOF
+
+cat << EOF > $MNT_ROOT/etc/network/interfaces
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+  address $IPADDR/$IPSUB
+  gateway $DFROUTE
+iface eth0 inet6 static
+  address $IP6ADDR/$IP6SUB
+  gateway $DF6ROUTE
+EOF
+
+cat << EOF > $MNT_ROOT/etc/local.d/01-update-motd.start
+#!/bin/sh
+
+# update-motd
+#  type: script, runs at boot
+#  purpose: updates /etc/motd with Information
+
+echo Alpine Linux `cat /etc/alpine-release` > /etc/motd
+echo Approximate boot time: `date` >> /etc/motd
+EOF
+chmod 0755 $MNT_ROOT/etc/local.d/01-update-motd.start
+
+bindmount proc
+bindmount dev
+bindmount sys
+
+chroot $MNT_ROOT /bin/sh << EOF
+apk update
+apk upgrade
+apk add $DIST_ADDL_PACKAGES
+
+setup-hostname -n $HN
+rc-update -q add devfs sysinit
+rc-update -q add dmesg sysinit
+rc-update -q add hwdrivers sysinit
+rc-update -q add mdev sysinit
+
+rc-update -q add bootmisc boot
+rc-update -q add hostname boot
+rc-update -q add hwclock boot
+rc-update -q add modules boot
+rc-update -q add networking boot
+rc-update -q add pingu boot
+rc-update -q add sysctl boot
+rc-update -q add syslog boot
+rc-update -q add udhcpd boot
+rc-update -q add urandom boot
+
+rc-update -q add killprocs shutdown
+rc-update -q add mount-ro shutdown
+rc-update -q add pingu shutdown
+rc-update -q add savecache shutdown
+
+rc-update -q add acpid default
+rc-update -q add crond default
+rc-update -q add local default
+rc-update -q add ntpd default
+rc-update -q add sshd default
+
+echo features=\""$INST_FEAT"\" > /etc/mkinitfs/mkinitfs.conf
+
+
+apk add $DIST_FINAL_PACKAGES
+
+extlinux -i /boot
+dd if=/usr/share/syslinux/mbr.bin of=/dev/$HW_DISK bs=440 conv=notrunc count=1
+EOF
+
+mkdir /mnt/root/.ssh
+get_sshkeys > /mnt/root/.ssh/authorized_keys
+chmod 0700 /mnt/root/.ssh
+chmod 0600 /mnt/root/.ssh/authorized_keys
+
+chroot $MNT_ROOT passwd
+
+umount $MNT_ROOT/proc $MNT_ROOT/sys $MNT_ROOT/dev $MNT_BOOT $MNT_VAR $MNT_ROOT
+
+cd $HOME
+rm -r $WORKDIR

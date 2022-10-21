@@ -1,0 +1,10 @@
+#!/bin/sh
+
+[ -f /etc/pushbeat.conf ] && . /etc/pushbeat.conf
+[ -f /usr/local/etc/pushbeat.conf ] && . /usr/local/etc/pushbeat.conf
+
+CURL=/usr/bin/curl
+OPTS="-qs"
+URI="https://$FQDN/api/push/$KEY?status=up&msg=OK&ping="
+
+$CURL $OPTS $URI >> /var/log/pushbeat 2>> /var/log/pushbeat.err

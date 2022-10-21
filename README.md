@@ -33,3 +33,26 @@ On a host with multiple containers running with "nextcl" in the name:
 	% dexec nextcl
 	(a listing of all containers matching fragment 'nextcl', asking for a more specific name)
 
+## pushbeat
+
+Utility intended to be run via crontasks that sends a heartbeat back to a given Uptime-Kuma install
+
+### Installation
+
+* Copy `pushbeat` to `/usr/local/bin/`
+* Copy `pushbeat.conf` to `/etc/` or `/usr/local/etc/`
+* `touch /var/log/pushbeat /var/log/pushbeat.err`
+* Ensure the user you intend to run pushbeat as, can write to the above logfiles.
+
+### Configuration
+
+Edit `pushbeat.conf` with your FQDN (address where uptime-kuma is hosted, WITHOUT protocol) and KEY (a unique token given to you by Uptime-Kuma when you create an incoming HTTP monitor)
+
+### Usage
+
+Edit your crontab to include the following:
+
+	* * * * * /usr/local/bin/pushbeat
+
+On other operating systems, such as macOS, you may need to configure cron a different way.
+
